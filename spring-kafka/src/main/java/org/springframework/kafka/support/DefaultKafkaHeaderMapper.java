@@ -81,6 +81,20 @@ public class DefaultKafkaHeaderMapper extends AbstractKafkaHeaderMapper {
 					"org.springframework.util"
 			);
 
+	/**
+	 * Types that are never trusted for header deserialization, even when their package is
+	 * trusted, because constructing them from an untrusted header value has a network side
+	 * effect. For example, deserializing a {@code java.net.InetAddress} calls
+	 * {@code InetAddress.getByName()}, which performs a DNS lookup during deserialization.
+	 * Such headers are returned to the application as a {@link NonTrustedHeaderType}.
+	 */
+	private static final Set<String> UNTRUSTED_TYPES = new HashSet<>(Arrays.asList(
+					"java.net.InetAddress",
+					"java.net.Inet4Address",
+					"java.net.Inet6Address",
+					"java.net.InetSocketAddress"
+			));
+
 	private static final List<String> DEFAULT_TO_STRING_CLASSES =
 			Arrays.asList(
 					"org.springframework.util.MimeType",
@@ -218,6 +232,13 @@ public class DefaultKafkaHeaderMapper extends AbstractKafkaHeaderMapper {
 	 * If any of the supplied packages is {@code "*"}, all packages are trusted.
 	 * If a class for a non-trusted package is encountered, the header is returned to the
 	 * application with value of type {@link NonTrustedHeaderType}.
+	 * <p>
+	 * A small set of types whose construction has a network side effect
+	 * ({@code java.net.InetAddress}, {@code java.net.Inet4Address},
+	 * {@code java.net.Inet6Address} and {@code java.net.InetSocketAddress}, since
+	 * deserializing them performs a DNS lookup) is never trusted, even if {@code java.net}
+	 * or {@code "*"} is trusted; such headers, and arrays of them, are always returned as a
+	 * {@link NonTrustedHeaderType}.
 	 * @param packagesToTrust the packages to trust.
 	 */
 	public void addTrustedPackages(String... packagesToTrust) {
@@ -381,6 +402,9 @@ public class DefaultKafkaHeaderMapper extends AbstractKafkaHeaderMapper {
 		if (requestedType.equals(NonTrustedHeaderType.class.getName())) {
 			return true;
 		}
+		if (UNTRUSTED_TYPES.contains(componentTypeName(requestedType))) {
+			return false;
+		}
 		if (TRUSTED_ARRAY_TYPES.contains(requestedType)) {
 			return true;
 		}
@@ -399,6 +423,27 @@ public class DefaultKafkaHeaderMapper extends AbstractKafkaHeaderMapper {
 			return false;
 		}
 		return true;
+	}
+
+	// Strips every array form ClassUtils.forName() accepts ("[", "[L...;" and a trailing "[]",
+	// in any combination), so a source-style "java.net.InetAddress[]" still hits UNTRUSTED_TYPES.
+	private static String componentTypeName(String type) {
+		String name = type;
+		String previous;
+		do {
+			previous = name;
+			while (name.startsWith("[")) {
+				name = name.substring(1);
+			}
+			if (name.length() > 1 && name.charAt(0) == 'L' && name.endsWith(";")) {
+				name = name.substring(1, name.length() - 1);
+			}
+			while (name.endsWith("[]")) {
+				name = name.substring(0, name.length() - 2);
+			}
+		}
+		while (!name.equals(previous));
+		return name;
 	}
 
 
